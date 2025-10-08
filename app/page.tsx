@@ -29,6 +29,12 @@ export default function ThoughtSpace() {
   const [currentLayer, setCurrentLayer] = useState(0);
   const [showProbabilities, setShowProbabilities] = useState(true);
   const [generationSpeed, setGenerationSpeed] = useState(1000);
+  const [temperature, setTemperature] = useState(1.0);
+  const [samplingMode, setSamplingMode] = useState<'greedy' | 'top-k' | 'top-p'>('greedy');
+  const [topK, setTopK] = useState(5);
+  const [topP, setTopP] = useState(0.9);
+  const [hoveredToken, setHoveredToken] = useState<Token | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const animationRef = useRef<number | undefined>(undefined);
   const timeRef = useRef(0);
 
@@ -100,6 +106,56 @@ export default function ThoughtSpace() {
     },
   ], []);
 
+  // Sampling utilities
+  const softmaxWithTemperature = (probs: number[], temp: number): number[] => {
+    const logits = probs.map((p) => Math.log(Math.max(p, 1e-9)));
+    const exps = logits.map((l) => Math.exp(l / Math.max(0.01, temp)));
+    const sum = exps.reduce((a, b) => a + b, 0);
+    return exps.map((e) => e / sum);
+  };
+
+  const applySampling = (probs: number[]): number[] => {
+    const p = softmaxWithTemperature(probs, temperature);
+
+    if (samplingMode === 'top-k') {
+      const indexed = p.map((v, i) => [v, i] as [number, number]);
+      indexed.sort((a, b) => b[0] - a[0]);
+      const topIndices = indexed.slice(0, topK).map((x) => x[1]);
+      const filtered = Array(p.length).fill(0);
+      let sum = 0;
+      topIndices.forEach((i) => {
+        filtered[i] = p[i];
+        sum += p[i];
+      });
+      return filtered.map((x) => x / sum);
+    }
+
+    if (samplingMode === 'top-p') {
+      const indexed = p.map((v, i) => [v, i] as [number, number]);
+      indexed.sort((a, b) => b[0] - a[0]);
+      const topIndices: number[] = [];
+      let cumProb = 0;
+      for (const [v, i] of indexed) {
+        cumProb += v;
+        topIndices.push(i);
+        if (cumProb >= topP) break;
+      }
+      const filtered = Array(p.length).fill(0);
+      let sum = 0;
+      topIndices.forEach((i) => {
+        filtered[i] = p[i];
+        sum += p[i];
+      });
+      return filtered.map((x) => x / sum);
+    }
+
+    return p;
+  };
+
+  const calculateEntropy = (probs: number[]): number => {
+    return -probs.reduce((s, x) => s + (x > 0 ? x * Math.log2(x) : 0), 0);
+  };
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -119,16 +175,23 @@ export default function ThoughtSpace() {
       const newBranches: ThoughtBranch[] = [];
 
     thoughtSequence.forEach((tokenData, i) => {
-      const x = spacing * (i + 1);
-      const mainProb = 1 - tokenData.alternatives.reduce((sum, alt) => sum + alt.prob, 0);
+    const x = spacing * (i + 1);
+    const baseProbs = [
+        1 - tokenData.alternatives.reduce((sum, alt) => sum + alt.prob, 0),
+      ...tokenData.alternatives.map((alt) => alt.prob),
+    ];
+    const adjustedProbs = applySampling(baseProbs);
 
-      const mainToken: Token = {
-        id: `main-${i}`,
-        text: tokenData.text,
-        x,
-        y: centerY,
-        probability: mainProb,
-        alternatives: tokenData.alternatives,
+    const mainToken: Token = {
+    id: `main-${i}`,
+    text: tokenData.text,
+    x,
+    y: centerY,
+    probability: adjustedProbs[0],
+      alternatives: tokenData.alternatives.map((alt, idx) => ({
+          ...alt,
+        prob: adjustedProbs[idx + 1],
+        })),
         layer: i,
         chosen: true,
         fadeIn: 0,
@@ -292,7 +355,9 @@ export default function ThoughtSpace() {
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [currentLayer, showProbabilities, thoughtSequence]);
+    
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLayer, showProbabilities, thoughtSequence, temperature, samplingMode, topK, topP]);
 
   // Auto-advance through layers
   useEffect(() => {
@@ -310,9 +375,33 @@ export default function ThoughtSpace() {
     tokensRef.current = tokensRef.current.map((t) => ({ ...t, fadeIn: 0 }));
   };
 
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setMousePos({ x, y });
+
+    // Find hovered token
+    const hovered = tokensRef.current.find((token) => {
+      if (token.layer > currentLayer) return false;
+      const dx = x - token.x;
+      const dy = y - token.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      return dist < 30;
+    });
+
+    setHoveredToken(hovered || null);
+  };
+
   return (
     <div className="relative w-screen h-screen bg-black overflow-hidden">
-      <canvas ref={canvasRef} className="absolute inset-0" />
+      <canvas
+        ref={canvasRef}
+        onMouseMove={handleMouseMove}
+        className="absolute inset-0 cursor-crosshair"
+      />
 
       <div className="absolute top-8 left-8 z-10 space-y-4 max-w-md">
         <div>
@@ -324,19 +413,100 @@ export default function ThoughtSpace() {
         </div>
 
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-400">Show Probabilities</span>
-            <button
-              onClick={() => setShowProbabilities(!showProbabilities)}
-              className={`px-3 py-1 rounded text-xs font-medium transition-all ${
-                showProbabilities
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-gray-800 text-gray-400'
-              }`}
-            >
-              {showProbabilities ? 'ON' : 'OFF'}
-            </button>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-400">Sampling Mode</span>
+              <span className="text-xs text-gray-500">
+                {samplingMode === 'greedy' && 'Argmax'}
+                {samplingMode === 'top-k' && `Top-${topK}`}
+                {samplingMode === 'top-p' && `Nucleus (p=${topP})`}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setSamplingMode('greedy')}
+                className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-all ${
+                  samplingMode === 'greedy'
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-gray-800 text-gray-400'
+                }`}
+              >
+                Greedy
+              </button>
+              <button
+                onClick={() => setSamplingMode('top-k')}
+                className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-all ${
+                  samplingMode === 'top-k'
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-gray-800 text-gray-400'
+                }`}
+              >
+                Top-k
+              </button>
+              <button
+                onClick={() => setSamplingMode('top-p')}
+                className={`flex-1 px-2 py-1 rounded text-xs font-medium transition-all ${
+                  samplingMode === 'top-p'
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-gray-800 text-gray-400'
+                }`}
+              >
+                Top-p
+              </button>
+            </div>
           </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-400">Temperature</span>
+              <span className="text-xs text-gray-500">{temperature.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              min="0.1"
+              max="2.0"
+              step="0.1"
+              value={temperature}
+              onChange={(e) => setTemperature(Number(e.target.value))}
+              className="w-full accent-blue-500"
+            />
+          </div>
+
+          {samplingMode === 'top-k' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-400">Top-k</span>
+                <span className="text-xs text-gray-500">{topK}</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="10"
+                step="1"
+                value={topK}
+                onChange={(e) => setTopK(Number(e.target.value))}
+                className="w-full accent-blue-500"
+              />
+            </div>
+          )}
+
+          {samplingMode === 'top-p' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-400">Top-p (Nucleus)</span>
+                <span className="text-xs text-gray-500">{topP.toFixed(2)}</span>
+              </div>
+              <input
+                type="range"
+                min="0.5"
+                max="1.0"
+                step="0.05"
+                value={topP}
+                onChange={(e) => setTopP(Number(e.target.value))}
+                className="w-full accent-blue-500"
+              />
+            </div>
+          )}
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -354,6 +524,20 @@ export default function ThoughtSpace() {
             />
           </div>
 
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-400">Show Probabilities</span>
+            <button
+              onClick={() => setShowProbabilities(!showProbabilities)}
+              className={`px-3 py-1 rounded text-xs font-medium transition-all ${
+                showProbabilities
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-gray-800 text-gray-400'
+              }`}
+            >
+              {showProbabilities ? 'ON' : 'OFF'}
+            </button>
+          </div>
+
           <button
             onClick={reset}
             className="w-full px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded font-medium transition-all text-sm"
@@ -363,16 +547,73 @@ export default function ThoughtSpace() {
         </div>
       </div>
 
+      {hoveredToken && (
+        <div
+          className="absolute z-20 pointer-events-none bg-gray-900 border border-gray-700 rounded-lg p-3 shadow-xl"
+          style={{
+            left: mousePos.x + 20,
+            top: mousePos.y + 20,
+          }}
+        >
+          <div className="space-y-2 text-xs">
+            <div className="font-bold text-white border-b border-gray-700 pb-2">
+              {hoveredToken.text}
+              {hoveredToken.chosen ? (
+                <span className="ml-2 text-blue-400">(chosen)</span>
+              ) : (
+                <span className="ml-2 text-gray-500">(alternative)</span>
+              )}
+            </div>
+            <div className="space-y-1">
+              <div className="flex justify-between">
+                <span className="text-gray-400">Probability:</span>
+                <span className="text-white font-mono">
+                  {(hoveredToken.probability * 100).toFixed(2)}%
+                </span>
+              </div>
+              {hoveredToken.alternatives.length > 0 && (
+                <>
+                  <div className="text-gray-500 mt-2 mb-1">Alternatives:</div>
+                  {hoveredToken.alternatives.slice(0, 3).map((alt, i) => (
+                    <div key={i} className="flex justify-between text-gray-400">
+                      <span>{alt.text}</span>
+                      <span className="font-mono">{(alt.prob * 100).toFixed(1)}%</span>
+                    </div>
+                  ))}
+                </>
+              )}
+              <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
+                <span className="text-gray-400">Entropy:</span>
+                <span className="text-white font-mono">
+                  {calculateEntropy([
+                    hoveredToken.probability,
+                    ...hoveredToken.alternatives.map((a) => a.prob),
+                  ]).toFixed(2)}{' '}
+                  bits
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="absolute bottom-8 left-8 right-8 z-10 text-xs text-gray-500 space-y-1">
         <p>
-          <span className="text-blue-400">Blue paths</span> = chosen tokens (highest
-          probability)
+          <span className="text-blue-400">Blue paths</span> ={' '}
+          {samplingMode === 'greedy' ? 'highest probability' : 'sampled from distribution'}
         </p>
         <p>
           <span className="text-gray-400">Gray paths</span> = alternative tokens
           (not chosen, but considered)
         </p>
-        <p>Token {currentLayer + 1} of {thoughtSequence.length}</p>
+        <div className="flex justify-between">
+          <span>Token {currentLayer + 1} of {thoughtSequence.length}</span>
+          {hoveredToken && (
+            <span className="text-blue-400">
+              Hover over tokens for details
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
