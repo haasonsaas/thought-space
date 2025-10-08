@@ -24,8 +24,8 @@ interface ThoughtBranch {
 
 export default function ThoughtSpace() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [, setTokens] = useState<Token[]>([]);
-  const [branches, setBranches] = useState<ThoughtBranch[]>([]);
+  const tokensRef = useRef<Token[]>([]);
+  const branchesRef = useRef<ThoughtBranch[]>([]);
   const [currentLayer, setCurrentLayer] = useState(0);
   const [showProbabilities, setShowProbabilities] = useState(true);
   const [generationSpeed, setGenerationSpeed] = useState(1000);
@@ -113,9 +113,10 @@ export default function ThoughtSpace() {
     const centerY = canvas.height / 2;
     const spacing = canvas.width / (thoughtSequence.length + 1);
 
-    // Generate token positions
-    const newTokens: Token[] = [];
-    const newBranches: ThoughtBranch[] = [];
+    // Generate token positions only once
+    if (tokensRef.current.length === 0) {
+      const newTokens: Token[] = [];
+      const newBranches: ThoughtBranch[] = [];
 
     thoughtSequence.forEach((tokenData, i) => {
       const x = spacing * (i + 1);
@@ -173,8 +174,9 @@ export default function ThoughtSpace() {
       }
     });
 
-    setTokens(newTokens);
-    setBranches(newBranches);
+      tokensRef.current = newTokens;
+      branchesRef.current = newBranches;
+    }
 
     // Animation loop
     const animate = () => {
@@ -183,19 +185,17 @@ export default function ThoughtSpace() {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       // Update fade-in for current layer
-      setTokens((prev) =>
-        prev.map((token) => {
-          if (token.layer <= currentLayer) {
-            return { ...token, fadeIn: Math.min(1, token.fadeIn + 0.05) };
-          }
-          return token;
-        })
-      );
+      tokensRef.current = tokensRef.current.map((token) => {
+        if (token.layer <= currentLayer) {
+          return { ...token, fadeIn: Math.min(1, token.fadeIn + 0.05) };
+        }
+        return token;
+      });
 
       // Draw branches
-      branches.forEach((branch) => {
-        const fromToken = newTokens.find((t) => t.id === branch.fromToken);
-        const toToken = newTokens.find((t) => t.id === branch.toToken);
+      branchesRef.current.forEach((branch) => {
+        const fromToken = tokensRef.current.find((t) => t.id === branch.fromToken);
+        const toToken = tokensRef.current.find((t) => t.id === branch.toToken);
 
         if (!fromToken || !toToken) return;
         if (toToken.layer > currentLayer) return;
@@ -227,7 +227,7 @@ export default function ThoughtSpace() {
       });
 
       // Draw tokens
-      newTokens.forEach((token) => {
+      tokensRef.current.forEach((token) => {
         if (token.layer > currentLayer) return;
 
         const alpha = token.fadeIn;
@@ -292,7 +292,7 @@ export default function ThoughtSpace() {
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [currentLayer, showProbabilities, branches, thoughtSequence]);
+  }, [currentLayer, showProbabilities, thoughtSequence]);
 
   // Auto-advance through layers
   useEffect(() => {
@@ -307,7 +307,7 @@ export default function ThoughtSpace() {
 
   const reset = () => {
     setCurrentLayer(0);
-    setTokens((prev) => prev.map((t) => ({ ...t, fadeIn: 0 })));
+    tokensRef.current = tokensRef.current.map((t) => ({ ...t, fadeIn: 0 }));
   };
 
   return (
