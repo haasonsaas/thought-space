@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 
 interface Token {
   id: string;
@@ -24,16 +24,16 @@ interface ThoughtBranch {
 
 export default function ThoughtSpace() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [tokens, setTokens] = useState<Token[]>([]);
+  const [, setTokens] = useState<Token[]>([]);
   const [branches, setBranches] = useState<ThoughtBranch[]>([]);
   const [currentLayer, setCurrentLayer] = useState(0);
   const [showProbabilities, setShowProbabilities] = useState(true);
   const [generationSpeed, setGenerationSpeed] = useState(1000);
-  const animationRef = useRef<number>();
+  const animationRef = useRef<number | undefined>(undefined);
   const timeRef = useRef(0);
 
   // Sample tokens representing a thought process
-  const thoughtSequence = [
+  const thoughtSequence = useMemo(() => [
     {
       text: 'I',
       alternatives: [
@@ -98,7 +98,7 @@ export default function ThoughtSpace() {
         { text: 'dimensions', prob: 0.20 },
       ],
     },
-  ];
+  ], []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -292,7 +292,7 @@ export default function ThoughtSpace() {
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [currentLayer, showProbabilities, branches]);
+  }, [currentLayer, showProbabilities, branches, thoughtSequence]);
 
   // Auto-advance through layers
   useEffect(() => {
@@ -303,7 +303,7 @@ export default function ThoughtSpace() {
     }, generationSpeed);
 
     return () => clearTimeout(timer);
-  }, [currentLayer, generationSpeed]);
+  }, [currentLayer, generationSpeed, thoughtSequence.length]);
 
   const reset = () => {
     setCurrentLayer(0);
